@@ -8,47 +8,7 @@ import os, sys
 from .path import Path
 from .properties import Properties
 from .initial_state import InitialState
-
-class CostSettings:
-    def __init__(
-        self,
-        position=10.0,
-        speed=5.0,
-        turn_angle=10.0,
-        speed_control=3.0,
-        turn_control=3.0,
-        gamma = 0.9,
-    ):
-        self._position = position
-        self._speed = speed
-        self._turn_angle = turn_angle
-        self._speed_control = speed_control
-        self._turn_control = turn_control
-        self._gamma = gamma
-
-    @property
-    def position(self) -> float:
-        return self._position
-
-    @property
-    def speed(self) -> float:
-        return self._speed
-
-    @property
-    def turn_angle(self) -> float:
-        return self._turn_angle
-
-    @property
-    def speed_control(self) -> float:
-        return self._speed_control
-
-    @property
-    def turn_control(self) -> float:
-        return self._turn_control
-
-    @property
-    def gamma(self) -> float:
-        return self._gamma
+from aecar.optimal_control.cost_settings import CostSettings
 
 class Trajectory:
     """
@@ -57,8 +17,8 @@ class Trajectory:
     def __init__(
         self,
         path:Path,
-        cost_settings:CostSettings=None,
         initial_state:InitialState=None,
+        cost_settings:CostSettings=None,
         properties:Properties=None,
     ):
         self._path = path
@@ -94,19 +54,9 @@ class Trajectory:
         self._dquad_dspeed = np.zeros((15,self.n_time))
         self._dquad_dturn = np.zeros((15,self.n_time))
 
-        # initial kernel matrix
-        self._kernel = np.zeros((15))
-
-        self._kernel_history = []
-        self._kernel_history.append([self.kernel[j] for j in range(15)])
-
     @property
     def path(self) -> Path:
         return self._path
-
-    @property
-    def cost_settings(self) -> CostSettings:
-        return self._cost_settings
 
     @property
     def initial_state(self) -> InitialState:
@@ -183,7 +133,11 @@ class Trajectory:
     @property
     def turn_control(self) -> List[float]:
         return self.control[1,:]
-    
+
+    @property
+    def costs(self) -> List[float]:
+        return self._costs
+
     @property
     def track_error(self) -> List[float]:
         return self._track_error
@@ -193,12 +147,20 @@ class Trajectory:
         return self._quad_track_error
 
     @property
-    def costs(self) -> List[float]:
-        return self._costs
+    def cost_settings(self) -> CostSettings:
+        return self._cost_settings
 
-    @property
-    def kernel(self) -> List[float]:
-        return self._kernel
+    def filepath(self, filename):
+        return os.path.join(self.save_folder, filename)
+
+    def total_cost(self, uarr):
+        
+        # overwrite the controls with uarr and update the trajectory and costs
+        self.control = np.copy(uarr)
+        self.update()
+
+        # compute the total cost with 
+        
 
     def update(self):
         """
@@ -220,7 +182,7 @@ class Trajectory:
         self._track_error[1,:] = self.x2 - self.path.x2
         self._track_error[2,:] = self.x1_speed - self.path.x1_dot
         self._track_error[3,:] = self.x2_speed - self.path.x2_dot
-        self.track_error[4,:] = (
+        self._track_error[4,:] = (
             self.path.x2_ddot * np.cos(self.theta) - \
             self.path.x1_ddot * np.sin(self.theta)
         ) - self.speed * self.speed * self.turn_angle / self.properties.length
@@ -250,10 +212,7 @@ class Trajectory:
                     self._dquad_dturn[ct,:] = self._dtrack_dturn[i,:] * self.track_error[j,:] +\
                         self.track_error[i,:] * self._dtrack_dturn[j,:]
 
-                    ct += 1
-
-        #print(f"final ct = {ct}")
-        #print(f"quad track error = {self._quad_track_error}")
+                    ct += 1    
 
         # update the cost functionals
         for i in range(self.n_time):
@@ -270,95 +229,12 @@ class Trajectory:
 
         return
 
-    def update_controls(self, start_index):
+    def post_process(self):
         """
-        update the optimal controls of the kernel matrix
+        post process with plots
         """
-        # update the controls using the kernel matrix
-        for i in range(start_index,self.n_time-1):
-            dt = self.time[i+1] - self.time[i]
-
-            # compute derivatives of kernel cost at state i+1
-            dcost_dspeed = sum(self.kernel * self._dquad_dspeed[:,i+1])
-            dcost_dturn = sum(self.kernel * self._dquad_dturn[:,i+1])
-
-            #print(f"dquad/dspeed = {self._dquad_dspeed[:,i+1]}")
-            #print(f"dquad/dturn = {self._dquad_dturn[:,i+1]}")
-
-            # optimal speed control
-            self._u[0,i] = -0.5 / self.cost_settings.speed_control * dt / self.properties.mass * dcost_dspeed
-            self._u[1,i] = -0.5 / self.cost_settings.turn_control * dt / self.properties.inertia * dcost_dturn
-
-    def train_online(self, width=10, plot=False):
-
-        start_index = 0
-        final_index = min(width,self.n_time-1) - 1
-
-        while final_index < self.n_time - 1:
-            indices = [i for i in range(start_index,final_index+1)]
-
-            # update controls with current kernel and then train it
-            self.update_controls(0)
-            self.update()
-            self.train_kernel(indices)
-            if plot: self.plot_path()
-
-            # update indices bounds for next run
-            if final_index == self.n_time - 2:
-                break
-            start_index=final_index+1
-            final_index=width-1 + start_index
-            final_index = min(final_index, self.n_time-2)
-
-
-    def train_kernel(self, indices:List[float]):
-        """
-        train the kernel matrix W with recursive least-squares
-        value function = sum(kernel*quad_tracking_error)
-
-        Y = X^T w to solve for w uses
-        XY = (XX^T) w
-        w_LS = inv(XX^T) X Y
-
-        Training occurs over the time indices given by indices
-        """
-        
-        # track error matrix w shape (15,indices) and tp is (indices,15)
-        track_error_matrix = self.quad_track_error[:,indices]
-        track_error_matrix_tp = np.transpose(self.quad_track_error[:,indices])
-
-        # compute X*X^T matrix of shape (15,15)
-        XXT = np.matmul(track_error_matrix, track_error_matrix_tp)
-
-        # determine the Y training vector
-        Y = np.zeros((len(indices), 1))
-        for i,index in enumerate(indices):
-            Y[i,0] = self.costs[index] + sum(self.kernel * self.quad_track_error[:,index+1])
-
-        # compute XY product of shape (15,1)
-        XY = np.matmul(track_error_matrix, Y)
-
-        # condition the matrix
-        sigma = 1e-10
-        for id in range(15):
-            XXT[id,id] += sigma
-
-        # solve the matrix equation (XX^T) * w_LS = XY
-        kernel_LS = np.linalg.solve(XXT, XY)
-
-        # update the kernel
-        self._kernel[:] = kernel_LS[:,0]
-
-        # test the residual of least squares
-        XTw = np.matmul(track_error_matrix_tp,kernel_LS)
-        resid = np.reshape(XTw - Y, (len(indices)))
-
-        print(f"LS resid = {resid}",flush=True)
-        print(f"kernel LS = {self.kernel}")
-        self._kernel_history.append([self.kernel[j] for j in range(15)])
-
-    def filepath(self, filename):
-        return os.path.join(self.save_folder, filename)
+        self.plot_path()
+        self.plot_states()
 
     def plot_path(self, save=True):
         """
@@ -391,31 +267,6 @@ class Trajectory:
         plt.legend()
         if save:
             plt.savefig(self.filepath("states.png"))
-        else:
-            plt.show()
-        plt.close()
-
-
-    def plot_kernel(self, save=True):
-        """
-        plot the kernel history
-        """
-        nhist = len(self._kernel_history)
-        kernel_mat = np.zeros((15,nhist))
-        iterations = [j for j in range(nhist)]
-        for ihist in range(nhist):
-            kernel = self._kernel_history[ihist]
-            kernel_mat[:,ihist] = kernel[:]
-
-        colors = "kbcgr"
-        plt.figure()
-        for i in range(15):
-            plt.plot(iterations, kernel_mat[i,:], colors[i%5] + "-", linewidth=2, label=f"kernel{i}")
-        plt.xlabel("iterations")
-        plt.ylabel("kernel entries")
-        #plt.legend()
-        if save:
-            plt.savefig(self.filepath("kernel.png"))
         else:
             plt.show()
         plt.close()

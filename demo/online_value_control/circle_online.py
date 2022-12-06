@@ -7,6 +7,11 @@ traj = aecar.Trajectory(circle_path)
 traj.initial_state.turn_angle = 1.0
 traj.update()
 
+car = aecar.Car(name="mycar", path=circle_path, trajectory=traj)
+
+# train the trajectory
+controller = aecar.OnlineValueControl(car=car)
+
 traj.plot_error()
-traj.train_online(width=100)
+controller.train_online(width=100)
 traj.plot_path()

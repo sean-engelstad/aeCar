@@ -2,8 +2,6 @@
 Autonomous car project for Optimal Control
 """
 
+from .optimal_control import *
 from .car import *
-from .path import *
-from .properties import *
-from .trajectory import *
-from .initial_state import *
+from .dynamics import *

@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from typing import TYPE_CHECKING 
 
 # import other car objects
-from .path import Path
-from .trajectory import Trajectory
+from .dynamics.path import Path
+from .dynamics.trajectory import Trajectory
 
 class Car:
     """
@@ -25,6 +25,10 @@ class Car:
     @property
     def trajectory(self):
         return self._trajectory
+
+    @property
+    def properties(self):
+        return self.trajectory.properties
 
     @property
     def path(self):
