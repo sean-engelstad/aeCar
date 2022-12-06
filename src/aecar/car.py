@@ -7,15 +7,15 @@ from typing import TYPE_CHECKING
 
 # import other car objects
 from .path import Path
-from .properties import Properties
+from .trajectory import Trajectory
 
 class Car:
     """
     Class for car dynamics and path trajectories
     """
-    def __init__(self, name:str, properties:Properties, path:Path):
+    def __init__(self, name:str, path:Path, trajectory:Trajectory):
         self._name = name
-        self._properties = properties
+        self._trajectory = trajectory
         self._path = path
 
     @property
@@ -23,8 +23,8 @@ class Car:
         return self._name
 
     @property
-    def properties(self):
-        return self._properties
+    def trajectory(self):
+        return self._trajectory
 
     @property
     def path(self):
