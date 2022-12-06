@@ -1,0 +1,11 @@
+Metadata-Version: 1.2
+Name: aecar
+Version: 1.0
+Summary: Online Reinforcement Learning Methods for Autonomous Vehicles
+Home-page: UNKNOWN
+Author: Sean Engelstad
+Author-email: sengelstad312@gatech.edu
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
+Requires-Python: >=3.6
