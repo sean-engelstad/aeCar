@@ -137,6 +137,17 @@ class Path:
             x2_fn=lambda t : x2_0 + S2 * t + a2*t*t,
         )
 
+    @classmethod
+    def circle(cls, time_vec=None, x1c=0.0, x2c=0.0, phase=0.0, radius=1.0):
+        if time_vec is None:
+            time_vec=np.linspace(start=0.0, stop=10.0, num=100)
+        return cls(
+            name="circle",
+            time_vec=time_vec,
+            x1_fn=lambda t : x1c + radius * np.cos(t - phase),
+            x2_fn=lambda t : x2c + radius * np.sin(t - phase),
+        )
+
     @property
     def name(self) -> str:
         return self._name

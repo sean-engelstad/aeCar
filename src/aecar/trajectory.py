@@ -4,7 +4,7 @@ __all__ = ["Trajectory"]
 import numpy as np
 from typing import TYPE_CHECKING, List
 import matplotlib.pyplot as plt
-import sys
+import os, sys
 from .path import Path
 from .properties import Properties
 from .initial_state import InitialState
@@ -14,7 +14,7 @@ class CostSettings:
         self,
         position=10.0,
         speed=5.0,
-        turn_angle=1.0,
+        turn_angle=10.0,
         speed_control=3.0,
         turn_control=3.0,
         gamma = 0.9,
@@ -69,6 +69,11 @@ class Trajectory:
         # initialize variables
         self._initialize_variables()
 
+        # setup a save folder
+        self._save_folder = os.path.join(os.getcwd(), f"{self.path.name}")
+        if not os.path.exists(self._save_folder):
+            os.mkdir(self._save_folder)
+
         # initialize the trajectory
         self.update()
 
@@ -90,7 +95,10 @@ class Trajectory:
         self._dquad_dturn = np.zeros((15,self.n_time))
 
         # initial kernel matrix
-        self._kernel = np.ones((15))
+        self._kernel = np.zeros((15))
+
+        self._kernel_history = []
+        self._kernel_history.append([self.kernel[j] for j in range(15)])
 
     @property
     def path(self) -> Path:
@@ -115,6 +123,10 @@ class Trajectory:
     @property
     def time(self) -> List[float]:
         return self.path.time
+
+    @property
+    def save_folder(self):
+        return self._save_folder
 
     @property
     def state(self) -> List[float]:
@@ -270,23 +282,26 @@ class Trajectory:
             dcost_dspeed = sum(self.kernel * self._dquad_dspeed[:,i+1])
             dcost_dturn = sum(self.kernel * self._dquad_dturn[:,i+1])
 
+            #print(f"dquad/dspeed = {self._dquad_dspeed[:,i+1]}")
+            #print(f"dquad/dturn = {self._dquad_dturn[:,i+1]}")
+
             # optimal speed control
             self._u[0,i] = -0.5 / self.cost_settings.speed_control * dt / self.properties.mass * dcost_dspeed
             self._u[1,i] = -0.5 / self.cost_settings.turn_control * dt / self.properties.inertia * dcost_dturn
 
-    def train_online(self, width=10):
+    def train_online(self, width=10, plot=False):
 
         start_index = 0
         final_index = min(width,self.n_time-1) - 1
 
         while final_index < self.n_time - 1:
-            indices = [i for i in range(0,final_index+1)]
+            indices = [i for i in range(start_index,final_index+1)]
 
             # update controls with current kernel and then train it
             self.update_controls(0)
             self.update()
             self.train_kernel(indices)
-            self.plot_path()
+            if plot: self.plot_path()
 
             # update indices bounds for next run
             if final_index == self.n_time - 2:
@@ -312,12 +327,8 @@ class Trajectory:
         track_error_matrix = self.quad_track_error[:,indices]
         track_error_matrix_tp = np.transpose(self.quad_track_error[:,indices])
 
-        #print(f"quad track error = {track_error_matrix}")
-
         # compute X*X^T matrix of shape (15,15)
         XXT = np.matmul(track_error_matrix, track_error_matrix_tp)
-        #print(f"XXT = {XXT}")
-        #print(f"XXT shape = {XXT.shape}")
 
         # determine the Y training vector
         Y = np.zeros((len(indices), 1))
@@ -327,30 +338,49 @@ class Trajectory:
         # compute XY product of shape (15,1)
         XY = np.matmul(track_error_matrix, Y)
 
+        # condition the matrix
+        sigma = 1e-10
+        for id in range(15):
+            XXT[id,id] += sigma
+
         # solve the matrix equation (XX^T) * w_LS = XY
         kernel_LS = np.linalg.solve(XXT, XY)
-
-        print(f"kernel LS = {kernel_LS}",flush=True)
 
         # update the kernel
         self._kernel[:] = kernel_LS[:,0]
 
+        # test the residual of least squares
+        XTw = np.matmul(track_error_matrix_tp,kernel_LS)
+        resid = np.reshape(XTw - Y, (len(indices)))
 
-    def plot_path(self):
+        print(f"LS resid = {resid}",flush=True)
+        print(f"kernel LS = {self.kernel}")
+        self._kernel_history.append([self.kernel[j] for j in range(15)])
+
+    def filepath(self, filename):
+        return os.path.join(self.save_folder, filename)
+
+    def plot_path(self, save=True):
         """
         plot the xy path taken in space
         """
+        plt.figure()
+        plt.plot(self.path.x1,self.path.x2, "b--", linewidth=3, label="path")
         plt.plot(self.x1, self.x2, "k-", linewidth=2, label="traj")
-        plt.plot(self.path.x1,self.path.x2, "b--", linewidth=2, label="path")
         plt.xlabel("X")
         plt.ylabel("Y")
         plt.legend()
-        plt.show()
+        if save:
+            plt.savefig(self.filepath("path.png"))
+        else:
+            plt.show()
+        plt.close()
 
-    def plot_states(self):
+    def plot_states(self, save=True):
         """
         plot the trajectory states
         """
+        plt.figure()
         plt.plot(self.time, self.x1, "k-", linewidth=2, label="x1")
         plt.plot(self.time,self.x2, "b-", linewidth=2, label="x2")
         plt.plot(self.time,self.speed, "c-", linewidth=2, label="speed")
@@ -359,16 +389,50 @@ class Trajectory:
         plt.xlabel("time")
         plt.ylabel("states")
         plt.legend()
-        plt.show()
+        if save:
+            plt.savefig(self.filepath("states.png"))
+        else:
+            plt.show()
+        plt.close()
 
-    def plot_error(self):
+
+    def plot_kernel(self, save=True):
+        """
+        plot the kernel history
+        """
+        nhist = len(self._kernel_history)
+        kernel_mat = np.zeros((15,nhist))
+        iterations = [j for j in range(nhist)]
+        for ihist in range(nhist):
+            kernel = self._kernel_history[ihist]
+            kernel_mat[:,ihist] = kernel[:]
+
+        colors = "kbcgr"
+        plt.figure()
+        for i in range(15):
+            plt.plot(iterations, kernel_mat[i,:], colors[i%5] + "-", linewidth=2, label=f"kernel{i}")
+        plt.xlabel("iterations")
+        plt.ylabel("kernel entries")
+        #plt.legend()
+        if save:
+            plt.savefig(self.filepath("kernel.png"))
+        else:
+            plt.show()
+        plt.close()
+
+    def plot_error(self, save=True):
         """
         plot the tracking error
         """
         colors = "kbcgr"
+        plt.figure()
         for i in range(5):
             plt.plot(self.time, self.track_error[i,:], colors[i] + "-", linewidth=2, label=f"e{i}")
         plt.xlabel("time")
         plt.ylabel("track error")
         plt.legend()
-        plt.show()
+        if save:
+            plt.savefig(self.filepath("tracking_error.png"))
+        else:
+            plt.show()
+        plt.close()
