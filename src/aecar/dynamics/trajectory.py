@@ -34,6 +34,18 @@ class Trajectory:
         if not os.path.exists(self._save_folder):
             os.mkdir(self._save_folder)
 
+        # state folder
+        self._state_folder = os.path.join(self._save_folder, "states")
+        if not os.path.exists(self._state_folder):
+            os.mkdir(self._state_folder)
+
+        # path folder
+        self._path_folder = os.path.join(self._save_folder, "path")
+        if not os.path.exists(self._path_folder):
+            os.mkdir(self._path_folder)
+
+        self._complex_on = True
+
         # initialize the trajectory
         self.update()
 
@@ -41,18 +53,18 @@ class Trajectory:
         """
         initialize all the variables and arrays for trajectory optimization
         """
-        self._x = np.zeros((5,self.n_time))
-        self._u = np.zeros((2,self.n_time-1))
-        self._costs = np.zeros((self.n_time))
+        self._x = np.zeros((5,self.n_time), dtype=complex)
+        self._u = np.zeros((2,self.n_time-1), dtype=complex)
+        self._costs = np.zeros((self.n_time), dtype=complex)
 
-        self._track_error = np.zeros((5,self.n_time))
-        self._quad_track_error = np.zeros((15,self.n_time))
+        self._track_error = np.zeros((5,self.n_time), dtype=complex)
+        self._quad_track_error = np.zeros((15,self.n_time), dtype=complex)
 
         # inititalize tracking error state gradients
-        self._dtrack_dspeed = np.zeros((5,self.n_time))
-        self._dtrack_dturn = np.zeros((5,self.n_time))
-        self._dquad_dspeed = np.zeros((15,self.n_time))
-        self._dquad_dturn = np.zeros((15,self.n_time))
+        self._dtrack_dspeed = np.zeros((5,self.n_time), dtype=complex)
+        self._dtrack_dturn = np.zeros((5,self.n_time), dtype=complex)
+        self._dquad_dspeed = np.zeros((15,self.n_time), dtype=complex)
+        self._dquad_dturn = np.zeros((15,self.n_time), dtype=complex)
 
     @property
     def path(self) -> Path:
@@ -150,32 +162,50 @@ class Trajectory:
     def cost_settings(self) -> CostSettings:
         return self._cost_settings
 
-    def filepath(self, filename):
-        return os.path.join(self.save_folder, filename)
+    def filepath(self, filename, folder=None):
+        if folder == "states":
+            return os.path.join(self._state_folder, filename)
+        elif folder == "path":
+            return os.path.join(self._path_folder, filename)
+        else:
+            return os.path.join(self.save_folder, filename)
 
-    def total_cost(self, uarr):
-        
-        # overwrite the controls with uarr and update the trajectory and costs
-        self.control = np.copy(uarr)
-        self.update()
+    def total_cost(self, uarr, indices, real=True):
 
-        # compute the total cost with 
-        
+        """
+        provide the total cost over this window of controls and time steps
+        """
 
-    def update(self):
+        # copy the controls into the u arr
+        for i,index in enumerate(indices[:-1]):
+            self._u[0,index] = uarr[0,i]
+            self._u[1,index] = uarr[1,i]
+
+        # update the trajectory and costs
+        #self.update(lb=indices[0], ub=indices[-1], real=real, track_derivatives=False)
+        self.update(real=real, track_derivatives=None)
+
+        # sum the costs over these indices
+        return sum(self._costs[indices])
+
+    def update(self, lb=0, ub=None, real=True, track_derivatives=False):
         """
         update the full trajectory using the nonlinear car dynamics
         """
 
+        if ub is None: ub = self.n_time
+
         # update the states for the given controls
         self._x[:,0] = self.initial_state.state
-        for i in range(self.n_time-1):
+        for i in range(lb,ub-1):
             dt = self.time[i+1] - self.time[i]
+            speed_control = self.speed_control[i].real if real else self.speed_control[i]
+            turn_control = self.speed_control[i].real if real else self.turn_control[i]
             self._x[0,i+1] = self._x[0,i] + dt * self.x1_speed[i]
             self._x[1,i+1] = self._x[1,i] + dt * self.x2_speed[i]
-            self._x[2,i+1] = self._x[2,i] + dt * self.speed_control[i] / self.properties.mass
+            self._x[2,i+1] = self._x[2,i] + dt * speed_control / self.properties.mass
             self._x[3,i+1] = self._x[3,i] + dt * self.speed[i] * self.turn_angle[i] / self.properties.length
-            self._x[4,i+1] = self._x[4,i] + dt * self.turn_control[i] / self.properties.inertia
+            self._x[4,i+1] = self._x[4,i] + dt * turn_control / self.properties.inertia
 
         # update the path tracking error
         self._track_error[0,:] = self.x1 - self.path.x1
@@ -189,33 +219,34 @@ class Trajectory:
 
         #print(f"track error = {self._track_error}")
 
-        # compute path tracking derivatives w.r.t. speed
-        self._dtrack_dspeed[2,:] = np.cos(self.theta)
-        self._dtrack_dspeed[3,:] = np.sin(self.theta)
-        self._dtrack_dspeed[4,:] = -2.0 * self.speed * self.turn_angle / self.properties.length
-        # compute path tracking derivatives w.r.t. turn angle
-        self._dtrack_dturn[4,:] = -1.0 * self.speed * self.speed / self.properties.length 
+        if track_derivatives:
+            # compute path tracking derivatives w.r.t. speed
+            self._dtrack_dspeed[2,:] = np.cos(self.theta)
+            self._dtrack_dspeed[3,:] = np.sin(self.theta)
+            self._dtrack_dspeed[4,:] = -2.0 * self.speed * self.turn_angle / self.properties.length
+            # compute path tracking derivatives w.r.t. turn angle
+            self._dtrack_dturn[4,:] = -1.0 * self.speed * self.speed / self.properties.length 
 
-        # update the quadratic path tracking error and derivatives
-        ct = 0
-        for i in range(5):
-            for j in range(5):
-                if i <= j:
-                    self._quad_track_error[ct,:] = self.track_error[i,:] * self.track_error[j,:]
-                    #print(f"quad track error {ct} = {self._quad_track_error[i,:]}")
+            # update the quadratic path tracking error and derivatives
+            ct = 0
+            for i in range(5):
+                for j in range(5):
+                    if i <= j:
+                        self._quad_track_error[ct,:] = self.track_error[i,:] * self.track_error[j,:]
+                        #print(f"quad track error {ct} = {self._quad_track_error[i,:]}")
 
-                    # compute speed derivative of quad path tracking error w/ product rule
-                    self._dquad_dspeed[ct,:] = self._dtrack_dspeed[i,:] * self.track_error[j,:] +\
-                        self.track_error[i,:] * self._dtrack_dspeed[j,:]
+                        # compute speed derivative of quad path tracking error w/ product rule
+                        self._dquad_dspeed[ct,:] = self._dtrack_dspeed[i,:] * self.track_error[j,:] +\
+                            self.track_error[i,:] * self._dtrack_dspeed[j,:]
 
-                    # compute turn angle derivative of quad path tracking error w/ product rule
-                    self._dquad_dturn[ct,:] = self._dtrack_dturn[i,:] * self.track_error[j,:] +\
-                        self.track_error[i,:] * self._dtrack_dturn[j,:]
+                        # compute turn angle derivative of quad path tracking error w/ product rule
+                        self._dquad_dturn[ct,:] = self._dtrack_dturn[i,:] * self.track_error[j,:] +\
+                            self.track_error[i,:] * self._dtrack_dturn[j,:]
 
-                    ct += 1    
+                        ct += 1    
 
         # update the cost functionals
-        for i in range(self.n_time):
+        for i in range(lb,ub):
             self._costs[i] = self.cost_settings.position * self._track_error[0,i]**2 + \
                 self.cost_settings.position * self._track_error[1,i]**2 + \
                 self.cost_settings.speed * self._track_error[2,i]**2 + \
@@ -224,66 +255,72 @@ class Trajectory:
 
             # controls cost
             if i < self.n_time - 1:
-                self._costs[i] += self.cost_settings.speed_control * self.speed_control[i]**2 + \
-                    self.cost_settings.turn_control * self.turn_control[i]**2
+                speed_control = self.speed_control[i].real if real else self.speed_control[i]
+                turn_control = self.speed_control[i].real if real else self.turn_control[i]
+                self._costs[i] += self.cost_settings.speed_control * speed_control**2 + \
+                    self.cost_settings.turn_control * turn_control**2
 
         return
 
-    def post_process(self):
+    def post_process(self, filestr=""):
         """
         post process with plots
         """
-        self.plot_path()
-        self.plot_states()
+        self.plot_path(filestr=filestr)
+        self.plot_states(filestr=filestr)
 
-    def plot_path(self, save=True):
+    def real_vec(self, vec):
+        return [v.real for v in vec]
+
+    def plot_path(self, save=True, filestr=""):
         """
         plot the xy path taken in space
         """
+
         plt.figure()
         plt.plot(self.path.x1,self.path.x2, "b--", linewidth=3, label="path")
-        plt.plot(self.x1, self.x2, "k-", linewidth=2, label="traj")
+        plt.plot(self.real_vec(self.x1), self.real_vec(self.x2), "k-", linewidth=2, label="traj")
         plt.xlabel("X")
         plt.ylabel("Y")
         plt.legend()
         if save:
-            plt.savefig(self.filepath("path.png"))
+            plt.savefig(self.filepath(f"path{filestr}.png", "path"))
         else:
             plt.show()
         plt.close()
 
-    def plot_states(self, save=True):
+    def plot_states(self, save=True, filestr=""):
         """
         plot the trajectory states
         """
         plt.figure()
-        plt.plot(self.time, self.x1, "k-", linewidth=2, label="x1")
-        plt.plot(self.time,self.x2, "b-", linewidth=2, label="x2")
-        plt.plot(self.time,self.speed, "c-", linewidth=2, label="speed")
-        plt.plot(self.time,self.theta, "g-", linewidth=2, label="theta")
-        plt.plot(self.time,self.turn_angle, "r-", linewidth=2, label="phi")
+        plt.plot(self.time, self.real_vec(self.x1), "k-", linewidth=2, label="x1")
+        plt.plot(self.time,self.real_vec(self.x2), "b-", linewidth=2, label="x2")
+        plt.plot(self.time,self.real_vec(self.speed), "c-", linewidth=2, label="speed")
+        plt.plot(self.time,self.real_vec(self.theta), "g-", linewidth=2, label="theta")
+        plt.plot(self.time,self.real_vec(self.turn_angle), "r-", linewidth=2, label="phi")
         plt.xlabel("time")
         plt.ylabel("states")
         plt.legend()
         if save:
-            plt.savefig(self.filepath("states.png"))
+            plt.savefig(self.filepath(f"states{filestr}.png", "states"))
         else:
             plt.show()
         plt.close()
 
-    def plot_error(self, save=True):
+    def plot_error(self, save=True, filestr=""):
         """
         plot the tracking error
         """
         colors = "kbcgr"
         plt.figure()
         for i in range(5):
-            plt.plot(self.time, self.track_error[i,:], colors[i] + "-", linewidth=2, label=f"e{i}")
+            plt.plot(self.time, self.real_vec(self.track_error[i,:]), colors[i] + "-", linewidth=2, label=f"e{i}")
         plt.xlabel("time")
         plt.ylabel("track error")
         plt.legend()
         if save:
-            plt.savefig(self.filepath("tracking_error.png"))
+            plt.savefig(self.filepath(f"tracking_error{filestr}.png"))
         else:
             plt.show()
         plt.close()

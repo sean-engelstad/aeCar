@@ -16,7 +16,7 @@ class CarManager:
     n_fixed=0,
     QP=100, 
     QS=5, 
-    R=0.2,
+    R=0.1,
     tf_100=10.0,
     ):
         self.name = name
@@ -27,7 +27,7 @@ class CarManager:
         self.QPF = QP
         self.QS = QS
         self.R = R
-        self.QI = 2
+        self.QI = 10
 
         self.x0 = x0
         self.x1_fn = x1_fn
@@ -57,6 +57,13 @@ class CarManager:
             self.state_folder.append(os.path.join(self.super_folder, f"states{icar}"))
             if not os.path.exists(self.state_folder[icar]):
                 os.mkdir(self.state_folder[icar])
+
+        self.multi_car_folder = []
+        positions = ["x","y"]
+        for id in range(2):
+            self.multi_car_folder.append(os.path.join(self.super_folder, f"multi{positions[id]}"))
+            if not os.path.exists(self.multi_car_folder[id]):
+                os.mkdir(self.multi_car_folder[id])
         
 
     @property
@@ -108,15 +115,18 @@ class CarManager:
     def plot_trajectory(self,uc,final=None):
         if final is None: final = self.n
         xc = self.trajectory(uc)
+        act_colors = ["b","c","g","r"]
         for final in range(2,final):
             plt.figure()
-            des_styles = ["k--", "k--"]
-            act_styles = ["b-", "g-"]
+
             for icar in range(self.num_cars):
-                plt.plot(self.xdes[icar,:final,0],self.xdes[icar,:final,1],des_styles[icar],label=f"desired{icar}")
+                if icar == 0:
+                    plt.plot(self.xdes[icar,:final,0],self.xdes[icar,:final,1],"k--",label=f"desired{icar}")
+                else:
+                    plt.plot(self.xdes[icar,:final,0],self.xdes[icar,:final,1],"k--")
                 x1 = [v.real for v in xc[icar,:final,0]]
                 x2 = [v.real for v in xc[icar,:final,1]]
-                plt.plot(x1,x2,act_styles[icar],label=f"actual{icar}")
+                plt.plot(x1,x2,act_colors[icar] + "-",label=f"actual{icar}")
             
             plt.legend()
             plt.xlabel("X")
@@ -150,6 +160,34 @@ class CarManager:
             plt.savefig(os.path.join(self.state_folder[icar], f"state_{self.n}.png"))
             plt.close()
 
+    def plot_multi_car(self, uc, final=None):
+        if final is None: final = self.n
+        xc = self.trajectory(uc)
+
+        for id in range(2):
+
+            plt.figure()
+
+            colors = "kbcgr"
+
+            for icar in range(self.num_cars):
+            
+                x1 = [v.real for v in xc[icar,:final,0]]
+                x2 = [v.real for v in xc[icar,:final,1]]
+
+                if id == 0:
+                    plt.plot(self.t,x1,f"{colors[icar]}-",label=f"x{icar}")
+                if id == 1:
+                    plt.plot(self.t,x2,f"{colors[icar]}-",label=f"y{icar}")
+            
+                plt.legend()
+                plt.xlabel("time")
+                plt.ylabel("state")
+                #plt.show()
+            plt.savefig(os.path.join(self.multi_car_folder[id], f"state_{self.n}.png"))
+            plt.close()
+    
+
     def value_function(self,uc):
         cost = 0.0
         #x = np.copy(self.xc)
@@ -163,9 +201,42 @@ class CarManager:
                 cost += (self.QP * (x[icar,i,0]-self.xdes[icar,i,0])**2 + self.QP * (x[icar,i,1] - self.xdes[icar,i,1])**2 +\
                     self.QS * (x[icar,i,2]*np.cos(x[icar,i,3])-xspeed)**2 + self.QS * (x[icar,i,2] * np.sin(x[icar,i,3]) - yspeed)**2 )
                 cost += (self.R * (uc[icar,i,0]**2 + uc[icar,i,1]**2))
+
+                # add multi car cost based on 
                 for jcar in range(self.num_cars):
+                    xjspeed = (self.xdes[jcar,i+1,0] - self.xdes[jcar,i,0])/self.dt
+                    yjspeed = (self.xdes[jcar,i+1,1] - self.xdes[jcar,i,1])/self.dt
                     if icar < jcar:
-                        cost += (self.QI * ((x[icar,i,0]-x[jcar,i,0])**2 + (x[icar,i,1]-x[jcar,i,1])**2))
+                        delta_xpos = x[icar,i,0] - x[jcar,i,0]
+                        delta_ypos = x[icar,i,1] - x[jcar,i,1]
+                        delta_xspeed = xspeed - xjspeed
+                        delta_yspeed = yspeed - yjspeed
+                        pos_vel_dp = delta_xpos * delta_xspeed + delta_ypos * delta_yspeed
+                        # old version of position car cost
+                        #cost += (self.QI * ((x[icar,i,0]-x[jcar,i,0])**2 + (x[icar,i,1]-x[jcar,i,1])**2))
+
+                        # pos * vel cost
+                        #dist_sq = delta_xpos**2 + delta_ypos**2
+                        #if pos_vel_dp > 0.0 and dist_sq < 0.5**2:
+                            # penalize based on (dx dot dV)/norm(dV) which is normal component of deltax
+                            #signed_dp = pos_vel_dp / (delta_xpos**2 + delta_ypos**2)
+                            #cost += self.QI / signed_dp**2
+                        #else:
+                        #    signed_dp = 0.0
+                        #cost += self.QI * signed_dp**2
+
+                        # activation cost
+                        #barrier_dist = 0.2
+                        #cost += self.QI * np.exp(-(delta_xpos**2 + delta_ypos**2)/barrier_dist**2)
+                        #cost += self.QI * 1.0/(1+(delta_xpos**2 + delta_ypos**2)/barrier_dist**2)
+
+                        # barrier functions
+                        sigma = 0.1
+                        cost += -1.0 * np.log(delta_xpos**2 + delta_ypos**2 - sigma**2)
+
+                        #if signed_dp > 0.0:
+                        #    print(f"signed dp = {signed_dp}")
+                        #    print(f"adj cost = {self.QI * signed_dp**2}")
 
                 # compute next state
                 x[icar,i+1,0] = x[icar,i,0] + self.dt * x[icar,i,2] * np.cos(x[icar,i,3])

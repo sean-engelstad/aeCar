@@ -11,7 +11,7 @@ x2_fn = lambda t : np.sin(2*t) - np.sin(t)**3
 x1_fn2 = lambda t : x1_fn(-t)
 x2_fn2 = lambda t : x2_fn(-t)
 
-n_window = 30
+n_window = 20
 
 for n in range(10,200,10):
 
@@ -32,7 +32,7 @@ for n in range(10,200,10):
         n=n,
         num_cars = 2,
         n_fixed=n-n_window,
-        x0=[[0.0,0.2,0.2,np.pi/2,0.1],[0.0,-0.2,-0.2,-np.pi/2,0.0]],
+        x0=[[0.2,0.2,0.2,np.pi/2,0.0],[0.0,-0.2,-0.2,-np.pi/2,0.0]],
         x1_fn=[x1_fn,x1_fn2],
         x2_fn=[x2_fn,x2_fn2],
         tf_100=8.0,

@@ -7,9 +7,9 @@ class CostSettings:
         self,
         position=10.0,
         speed=5.0,
-        turn_angle=10.0,
-        speed_control=3.0,
-        turn_control=3.0,
+        turn_angle=1.0,
+        speed_control=0.2,
+        turn_control=0.2,
         gamma = 0.9,
     ):
         self._position = position
